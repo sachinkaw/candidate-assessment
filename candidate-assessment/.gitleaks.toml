@@ -1,0 +1,14 @@
+title = "gitleaks config"
+
+[allowlist]
+  description = "Ignore generated and non-source content"
+  paths = [
+    '''^target/''',
+    '''^\.git/''',
+    '''^node_modules/''',
+    '''^vendor/''',
+    '''^terraform/.*\.tfvars$''',
+    '''^.*\.md$''',
+    '''^.*\.png$''',
+    '''^.*\.jpg$'''
+  ]

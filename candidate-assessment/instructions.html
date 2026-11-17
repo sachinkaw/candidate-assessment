@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Senior DevOps Assessment: Greenfield Deployment</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; max-width: 850px; margin: 40px auto; padding: 0 20px; color: #333; }
+        h1, h2, h3 { color: #2c3e50; }
+        code { background-color: #f4f4f4; padding: 2px 4px; border-radius: 4px; font-family: monospace; }
+        .alert { background-color: #fff3cd; border-left: 4px solid #ffeeba; padding: 15px; margin-bottom: 20px; }
+
+    </style>
+</head>
+<body>
+
+    <h1>Senior DevOps Assessment: Greenfield Deployment</h1>
+
+    <p>Welcome. We are launching a new Java Spring Boot microservice (a payment processor) that needs to be deployed to our production Kubernetes environments. Your task is to take the provided raw application code, containerize it, write the deployment configuration, build the automated pipeline, and ensure it correctly connects to our database.</p>
+    <p>Scope of Work (No Coding Required): Do not write or modify the provided Java application code. Assume the application logic, REST endpoints, and database connections are already completely functional. Your focus is strictly on the platform, the infrastructure, and the delivery pipeline. The application does not need to actually execute.</p>
+
+    <div class="alert">
+        <strong>Tooling Constraint:</strong> While we respect experience in native cloud IaC tools (like Bicep or CloudFormation), our environments span multiple cloud providers. Therefore, <strong>Terraform is a hard requirement for the infrastructure portion of this submission.</strong>
+    </div>
+
+    <h2>Your Deliverables</h2>
+
+    <h3>1. Containerization</h3>
+    <p>Write a production-ready <code>Dockerfile</code> for the provided Java application. Ensure it is optimized for size, security, and runtime efficiency.</p>
+
+    <h3>2. Infrastructure as Code</h3>
+    <p>Write a reusable Terraform module to provision the following infrastructure (you may assume AWS or Azure):</p>
+    <ul>
+        <li>A managed Kubernetes cluster.</li>
+        <li>A PostgreSQL database instance.</li>
+        <li><strong>Constraint:</strong> The database must reside in a strictly private network with zero public internet ingress. The cluster must be configured to communicate with it securely.</li>
+    </ul>
+
+    <h3>3. Kubernetes Manifests</h3>
+    <p>Provide the YAML files (Deployment, Service, etc.) to deploy this container to the cluster. Ensure the deployment is highly available, resilient to node failures, and securely retrieves its database credentials.</p>
+
+    <h3>4. Automation Pipeline</h3>
+    <p>Provide a CI/CD pipeline definition (e.g., GitLab CI or GitHub Actions) that builds the image, pushes it to a registry, and updates the infrastructure and cluster. The pipeline must be optimized for execution speed and include necessary security gates.</p>
+
+    <h3>5. The Reality Check</h3>
+    <p>Assume our PostgreSQL database is deployed in the same cluster environment. However, due to legacy volume attachment limits, the database takes up to 60 seconds to fully initialize and accept connections after a cluster restart. The Java application crashes immediately if it cannot connect to the database on startup.</p>
+    <p>Solve this problem within your deployment strategy, and explain your solution in a short <code>ARCHITECTURE.md</code> file.</p>
+
+    <p><em>Please submit your response as a single tar.gz including all the files.<br>
+           Do not actually provision the cloud resources.<br>
+        </em></p>
+
+</body>
+</html>

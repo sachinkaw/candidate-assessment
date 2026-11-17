@@ -1,0 +1,4 @@
+aws_region              = "us-east-1"
+kubernetes_version      = "1.33"
+postgres_engine_version = "16.8"
+deploy_role_arn         = "arn:aws:iam::123456789012:role/github-actions-payment-deploy"

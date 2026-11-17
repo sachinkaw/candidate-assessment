@@ -1,0 +1,108 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: payment-processor-pod-baseline
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-pod-security-context
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - payments
+      validate:
+        message: Pods in payments must run as non-root with the RuntimeDefault seccomp profile.
+        pattern:
+          spec:
+            hostNetwork: false
+            hostPID: false
+            hostIPC: false
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+    - name: require-container-hardening
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - payments
+      validate:
+        message: All containers must disable privilege escalation, use a read-only root filesystem, and drop Linux capabilities.
+        foreach:
+          - list: request.object.spec.containers
+            pattern:
+              securityContext:
+                privileged: false
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+                seccompProfile:
+                  type: RuntimeDefault
+          - list: request.object.spec.initContainers
+            pattern:
+              securityContext:
+                privileged: false
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+                seccompProfile:
+                  type: RuntimeDefault
+    - name: require-container-resources
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - payments
+      validate:
+        message: All containers must define CPU and memory requests and limits.
+        foreach:
+          - list: request.object.spec.containers
+            pattern:
+              resources:
+                requests:
+                  cpu: "?*"
+                  memory: "?*"
+                limits:
+                  cpu: "?*"
+                  memory: "?*"
+          - list: request.object.spec.initContainers
+            pattern:
+              resources:
+                requests:
+                  cpu: "?*"
+                  memory: "?*"
+                limits:
+                  cpu: "?*"
+                  memory: "?*"
+    - name: disallow-latest-image-tags
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - payments
+      validate:
+        message: All container images in payments must use an explicit non-latest tag.
+        foreach:
+          - list: request.object.spec.containers
+            pattern:
+              image: "!*:latest"
+          - list: request.object.spec.initContainers
+            pattern:
+              image: "!*:latest"

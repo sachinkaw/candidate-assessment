@@ -1,0 +1,190 @@
+name: Build and deploy
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: payment-processor-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive terraform
+
+      - name: Validate Terraform
+        working-directory: terraform/environments/production
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - name: Validate production Kustomize overlay
+        run: kubectl kustomize k8s/overlays/production > /dev/null
+
+      - uses: aquasecurity/trivy-action@v0.29.0
+        name: Scan infrastructure and manifests
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build container for security scan
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: payment-processor:assessment
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - uses: aquasecurity/trivy-action@v0.29.0
+        name: Scan container image
+        with:
+          image-ref: payment-processor:assessment
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Generate SBOM for assessment image
+        uses: aquasecurity/trivy-action@v0.29.0
+        with:
+          image-ref: payment-processor:assessment
+          format: cyclonedx
+          output: payment-processor-assessment.cdx.json
+          exit-code: "0"
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: payment-processor-assessment-sbom
+          path: payment-processor-assessment.cdx.json
+          if-no-files-found: error
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: validate
+    timeout-minutes: 45
+    runs-on: [self-hosted, linux, x64, vpc]
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: us-east-1
+      TF_VAR_aws_region: us-east-1
+      TF_VAR_deploy_role_arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Apply infrastructure
+        working-directory: terraform/environments/production
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=payment-processor/production/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+          terraform apply -input=false -auto-approve
+
+      - name: Configure cluster and registry
+        id: outputs
+        working-directory: terraform/environments/production
+        run: |
+          echo "cluster_name=$(terraform output -raw cluster_name)" >> "$GITHUB_OUTPUT"
+          echo "repository_url=$(terraform output -raw ecr_repository_url)" >> "$GITHUB_OUTPUT"
+          echo "external_secrets_role_arn=$(terraform output -raw external_secrets_role_arn)" >> "$GITHUB_OUTPUT"
+          echo "database_secret_name=$(terraform output -raw database_secret_name)" >> "$GITHUB_OUTPUT"
+          aws eks update-kubeconfig --region "$AWS_REGION" --name "$(terraform output -raw cluster_name)"
+          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$(terraform output -raw ecr_repository_url | cut -d/ -f1)"
+
+      - name: Build, scan, and push immutable image
+        env:
+          IMAGE: ${{ steps.outputs.outputs.repository_url }}:${{ github.sha }}
+        run: |
+          docker buildx build --load --tag "$IMAGE" \
+            --cache-from type=gha --cache-to type=gha,mode=max .
+          trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "$IMAGE"
+          docker push "$IMAGE"
+
+      - name: Generate SBOM for immutable image
+        uses: aquasecurity/trivy-action@v0.29.0
+        with:
+          image-ref: ${{ steps.outputs.outputs.repository_url }}:${{ github.sha }}
+          format: cyclonedx
+          output: payment-processor-${{ github.sha }}.cdx.json
+          exit-code: "0"
+
+      - name: Upload immutable SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: payment-processor-sbom-${{ github.sha }}
+          path: payment-processor-${{ github.sha }}.cdx.json
+          if-no-files-found: error
+
+      - name: Install External Secrets Operator
+        env:
+          ESO_ROLE_ARN: ${{ steps.outputs.outputs.external_secrets_role_arn }}
+        run: |
+          helm repo add external-secrets https://charts.external-secrets.io
+          helm repo update
+          helm upgrade --install external-secrets external-secrets/external-secrets \
+            --namespace external-secrets --create-namespace \
+            --set installCRDs=true \
+            --set serviceAccount.create=true \
+            --set serviceAccount.name=external-secrets \
+            --set-string 'serviceAccount.annotations.eks\.amazonaws\.com/role-arn'="$ESO_ROLE_ARN" \
+            --wait --timeout 5m
+          kubectl wait --for=condition=Established crd/clustersecretstores.external-secrets.io --timeout=120s
+
+      - name: Install Kyverno and enforce workload policies
+        run: |
+          helm repo add kyverno https://kyverno.github.io/kyverno/
+          helm repo update kyverno
+          helm upgrade --install kyverno kyverno/kyverno \
+            --version 3.5.0 \
+            --namespace kyverno --create-namespace \
+            --set admissionController.replicas=3 \
+            --wait --timeout 5m
+          kubectl apply -f k8s/policies/kyverno/
+          kubectl wait --for=condition=Ready clusterpolicy/payment-processor-pod-baseline --timeout=120s
+
+      - name: Apply Kubernetes resources
+        env:
+          IMAGE: ${{ steps.outputs.outputs.repository_url }}:${{ github.sha }}
+          DB_SECRET_NAME: ${{ steps.outputs.outputs.database_secret_name }}
+        run: |
+          kubectl apply -f k8s/overlays/production/namespace.yaml
+          envsubst '${AWS_REGION}' < k8s/overlays/production/cluster-secret-store.yaml | kubectl apply -f -
+          kubectl kustomize k8s/overlays/production \
+            | envsubst '${DB_SECRET_NAME} ${IMAGE}' \
+            | kubectl apply -f -
+          kubectl rollout status deployment/payment-processor -n payments --timeout=10m
